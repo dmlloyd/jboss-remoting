@@ -211,6 +211,10 @@ final class RemoteConnection {
         return writeListener.queue;
     }
 
+    void sendSome() throws IOException {
+        writeListener.sendSome();
+    }
+
     final class RemoteWriteListener implements ChannelListener<ConnectedMessageChannel> {
 
         private final Queue<Pooled<ByteBuffer>> queue = new ArrayDeque<Pooled<ByteBuffer>>();
@@ -223,44 +227,60 @@ final class RemoteConnection {
         public void handleEvent(final ConnectedMessageChannel channel) {
             synchronized (queue) {
                 assert channel == getChannel();
-                Pooled<ByteBuffer> pooled;
-                final Queue<Pooled<ByteBuffer>> queue = this.queue;
-                try {
-                    while ((pooled = queue.peek()) != null) {
-                        final ByteBuffer buffer = pooled.getResource();
-                        if (channel.send(buffer)) {
-                            RemoteLogger.conn.logf(FQCN, Logger.Level.TRACE, null, "Sent message %s (via queue)", buffer);
-                            queue.poll().free();
-                        } else {
-                            // try again later
-                            return;
-                        }
+                doSend(Integer.MAX_VALUE);
+            }
+        }
+
+        void sendSome() throws IOException {
+            assert Thread.holdsLock(queue);
+            doSend(5);
+        }
+
+        private void doSend(int max) {
+            assert Thread.holdsLock(queue);
+            int cnt = 0;
+            Pooled<ByteBuffer> pooled;
+            final Queue<Pooled<ByteBuffer>> queue = this.queue;
+            try {
+                while ((pooled = queue.peek()) != null) {
+                    final ByteBuffer buffer = pooled.getResource();
+                    if (channel.send(buffer)) {
+                        RemoteLogger.conn.logf(FQCN, Logger.Level.TRACE, null, "Sent message %s (via queue)", buffer);
+                        queue.poll().free();
+                        cnt ++;
+                    } else {
+                        // try again later
+                        return;
                     }
-                    if (channel.flush()) {
-                        RemoteLogger.conn.logf(FQCN, Logger.Level.TRACE, null, "Flushed channel");
-                        if (closed) {
-                            terminateHeartbeat();
-                            // End of queue reached; shut down and try to flush the remainder
-                            channel.shutdownWrites();
-                            if (channel.flush()) {
-                                RemoteLogger.conn.logf(FQCN, Logger.Level.TRACE, null, "Shut down writes on channel");
-                                return;
-                            }
-                            // either this is successful and no more notifications will come, or not and it will be retried
-                            // either way we're done here
-                            return;
-                        }
-                        channel.suspendWrites();
-                    }
-                } catch (IOException e) {
-                    handleException(e, false);
-                    channel.wakeupReads();
-                    while ((pooled = queue.poll()) != null) {
-                        pooled.free();
+                    if (cnt >= max) {
+                        // try again later
+                        return;
                     }
                 }
-                // else try again later
+                if (channel.flush()) {
+                    RemoteLogger.conn.logf(FQCN, Logger.Level.TRACE, null, "Flushed channel");
+                    if (closed) {
+                        terminateHeartbeat();
+                        // End of queue reached; shut down and try to flush the remainder
+                        channel.shutdownWrites();
+                        if (channel.flush()) {
+                            RemoteLogger.conn.logf(FQCN, Logger.Level.TRACE, null, "Shut down writes on channel");
+                            return;
+                        }
+                        // either this is successful and no more notifications will come, or not and it will be retried
+                        // either way we're done here
+                        return;
+                    }
+                    channel.suspendWrites();
+                }
+            } catch (IOException e) {
+                handleException(e, false);
+                channel.wakeupReads();
+                while ((pooled = queue.poll()) != null) {
+                    pooled.free();
+                }
             }
+            // else try again later
         }
 
         public void shutdownWrites() {
