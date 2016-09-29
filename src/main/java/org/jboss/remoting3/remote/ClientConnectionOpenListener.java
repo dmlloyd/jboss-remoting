@@ -60,7 +60,7 @@ import org.xnio.Options;
 import org.xnio.Pooled;
 import org.xnio.Sequence;
 import org.xnio.channels.Channels;
-import org.xnio.channels.ConnectedMessageChannel;
+import org.xnio.channels.ConnectedStreamChannel;
 import org.xnio.channels.SslChannel;
 import org.xnio.channels.WrappedChannel;
 import org.xnio.sasl.SaslUtils;
@@ -77,7 +77,7 @@ import javax.security.sasl.SaslException;
 import static org.jboss.remoting3.remote.RemoteLogger.client;
 import static org.xnio.sasl.SaslUtils.EMPTY_BYTES;
 
-final class ClientConnectionOpenListener implements ChannelListener<ConnectedMessageChannel> {
+final class ClientConnectionOpenListener implements ChannelListener<ConnectedStreamChannel> {
     private final RemoteConnection connection;
     private final ConnectionProviderContext connectionProviderContext;
     private final CallbackHandler callbackHandler;
@@ -99,7 +99,7 @@ final class ClientConnectionOpenListener implements ChannelListener<ConnectedMes
         this.disallowedMechs = disallowedMechs == null ? Collections.<String>emptySet() : new HashSet<String>(disallowedMechs);
     }
 
-    public void handleEvent(final ConnectedMessageChannel channel) {
+    public void handleEvent(final ConnectedStreamChannel channel) {
         connection.setReadListener(new Greeting(), true);
     }
 
@@ -154,28 +154,27 @@ final class ClientConnectionOpenListener implements ChannelListener<ConnectedMes
         }
     }
 
-    final class Greeting implements ChannelListener<ConnectedMessageChannel> {
+    final class Greeting implements ChannelListener<ConnectedStreamChannel> {
 
-        public void handleEvent(final ConnectedMessageChannel channel) {
-            final Pooled<ByteBuffer> pooledReceiveBuffer = connection.allocate();
+        public void handleEvent(final ConnectedStreamChannel channel) {
+            final MessageReader messageReader = connection.getMessageReader();
+            final Pooled<ByteBuffer> pooledReceiveBuffer;
+            try {
+                pooledReceiveBuffer = messageReader.getMessage();
+            } catch (IOException e) {
+                connection.handleException(e);
+                return;
+            }
+            if (pooledReceiveBuffer == null) {
+                return;
+            }
+            if (pooledReceiveBuffer == MessageReader.EOF_MARKER) {
+                connection.handleException(client.abruptClose(connection));
+                return;
+            }
             try {
                 final ByteBuffer receiveBuffer = pooledReceiveBuffer.getResource();
-                int res;
-                try {
-                    res = channel.receive(receiveBuffer);
-                } catch (IOException e) {
-                    connection.handleException(e);
-                    return;
-                }
-                if (res == -1) {
-                    connection.handleException(client.abruptClose(connection));
-                    return;
-                }
-                if (res == 0) {
-                    return;
-                }
                 client.tracef("Received %s", receiveBuffer);
-                receiveBuffer.flip();
                 String remoteServerName = null;
                 final byte msgType = receiveBuffer.get();
                 switch (msgType) {
@@ -238,7 +237,7 @@ final class ClientConnectionOpenListener implements ChannelListener<ConnectedMes
 
     }
 
-    final class Capabilities implements ChannelListener<ConnectedMessageChannel> {
+    final class Capabilities implements ChannelListener<ConnectedStreamChannel> {
 
         private final String remoteServerName;
 
@@ -246,25 +245,25 @@ final class ClientConnectionOpenListener implements ChannelListener<ConnectedMes
             this.remoteServerName = remoteServerName;
         }
 
-        public void handleEvent(final ConnectedMessageChannel channel) {
-            final Pooled<ByteBuffer> pooledReceiveBuffer = connection.allocate();
+        public void handleEvent(final ConnectedStreamChannel channel) {
+            final MessageReader messageReader = connection.getMessageReader();
+            final Pooled<ByteBuffer> pooledReceiveBuffer;
+            try {
+                pooledReceiveBuffer = messageReader.getMessage();
+            } catch (IOException e) {
+                connection.handleException(e);
+                return;
+            }
+            if (pooledReceiveBuffer == null) {
+                return;
+            }
+            if (pooledReceiveBuffer == MessageReader.EOF_MARKER) {
+                connection.handleException(client.abruptClose(connection));
+                return;
+            }
             try {
                 final ByteBuffer receiveBuffer = pooledReceiveBuffer.getResource();
-                int res;
-                try {
-                    res = channel.receive(receiveBuffer);
-                } catch (IOException e) {
-                    connection.handleException(e);
-                    return;
-                }
-                if (res == -1) {
-                    connection.handleException(client.abruptClose(connection));
-                    return;
-                }
-                if (res == 0) {
-                    return;
-                }
-                receiveBuffer.flip();
+                client.tracef("Received %s", receiveBuffer);
                 boolean starttls = false;
                 final Set<String> serverSaslMechs = new LinkedHashSet<String>();
                 final byte msgType = receiveBuffer.get();
@@ -453,7 +452,7 @@ final class ClientConnectionOpenListener implements ChannelListener<ConnectedMes
                         client.tracef("Client initiating authentication using mechanism %s", mechanismName);
 
                         final String theRemoteEndpointName = remoteEndpointName;
-                        connection.getChannel().suspendReads();
+                        messageReader.suspendReads();
                         final int negotiatedVersion = version;
                         final SaslClient usedSaslClient = saslClient;
                         final Authentication authentication = new Authentication(usedSaslClient, remoteServerName, userName, theRemoteEndpointName, behavior, channelsIn, channelsOut);
@@ -524,7 +523,7 @@ final class ClientConnectionOpenListener implements ChannelListener<ConnectedMes
         }
     }
 
-    final class StartTls implements ChannelListener<ConnectedMessageChannel> {
+    final class StartTls implements ChannelListener<ConnectedStreamChannel> {
 
         private final String remoteServerName;
 
@@ -532,26 +531,25 @@ final class ClientConnectionOpenListener implements ChannelListener<ConnectedMes
             this.remoteServerName = remoteServerName;
         }
 
-        public void handleEvent(final ConnectedMessageChannel channel) {
-            final Pooled<ByteBuffer> pooledReceiveBuffer = connection.allocate();
+        public void handleEvent(final ConnectedStreamChannel channel) {
+            final MessageReader messageReader = connection.getMessageReader();
+            final Pooled<ByteBuffer> pooledReceiveBuffer;
+            try {
+                pooledReceiveBuffer = messageReader.getMessage();
+            } catch (IOException e) {
+                connection.handleException(e);
+                return;
+            }
+            if (pooledReceiveBuffer == null) {
+                return;
+            }
+            if (pooledReceiveBuffer == MessageReader.EOF_MARKER) {
+                connection.handleException(client.abruptClose(connection));
+                return;
+            }
             try {
                 final ByteBuffer receiveBuffer = pooledReceiveBuffer.getResource();
-                int res;
-                try {
-                    res = channel.receive(receiveBuffer);
-                } catch (IOException e) {
-                    connection.handleException(e);
-                    return;
-                }
-                if (res == -1) {
-                    connection.handleException(client.abruptClose(connection));
-                    return;
-                }
-                if (res == 0) {
-                    return;
-                }
                 client.tracef("Received %s", receiveBuffer);
-                receiveBuffer.flip();
                 final byte msgType = receiveBuffer.get();
                 switch (msgType) {
                     case Protocol.CONNECTION_ALIVE: {
@@ -603,7 +601,7 @@ final class ClientConnectionOpenListener implements ChannelListener<ConnectedMes
         }
     }
 
-    final class Authentication implements ChannelListener<ConnectedMessageChannel> {
+    final class Authentication implements ChannelListener<ConnectedStreamChannel> {
 
         private final SaslClient saslClient;
         private final String serverName;
@@ -623,28 +621,27 @@ final class ClientConnectionOpenListener implements ChannelListener<ConnectedMes
             this.maxOutboundChannels = maxOutboundChannels;
         }
 
-        public void handleEvent(final ConnectedMessageChannel channel) {
-            final Pooled<ByteBuffer> pooledBuffer = connection.allocate();
+        public void handleEvent(final ConnectedStreamChannel channel) {
+            final MessageReader messageReader = connection.getMessageReader();
+            final Pooled<ByteBuffer> pooledBuffer;
+            try {
+                pooledBuffer = messageReader.getMessage();
+            } catch (IOException e) {
+                connection.handleException(e);
+                return;
+            }
+            if (pooledBuffer == null) {
+                return;
+            }
+            if (pooledBuffer == MessageReader.EOF_MARKER) {
+                saslDispose(saslClient);
+                connection.handleException(client.abruptClose(connection));
+                return;
+            }
             boolean free = true;
             try {
                 final ByteBuffer buffer = pooledBuffer.getResource();
-                final int res;
-                try {
-                    res = channel.receive(buffer);
-                } catch (IOException e) {
-                    connection.handleException(e);
-                    saslDispose(saslClient);
-                    return;
-                }
-                if (res == 0) {
-                    return;
-                }
-                if (res == -1) {
-                    connection.handleException(client.abruptClose(connection));
-                    saslDispose(saslClient);
-                    return;
-                }
-                buffer.flip();
+                client.tracef("Received %s", buffer);
                 final byte msgType = buffer.get();
                 switch (msgType) {
                     case Protocol.CONNECTION_ALIVE: {
@@ -664,7 +661,7 @@ final class ClientConnectionOpenListener implements ChannelListener<ConnectedMes
                     }
                     case Protocol.AUTH_CHALLENGE: {
                         client.trace("Client received authentication challenge");
-                        channel.suspendReads();
+                        messageReader.suspendReads();
                         connection.getExecutor().execute(new Runnable() {
                             public void run() {
                                 try {
@@ -695,7 +692,7 @@ final class ClientConnectionOpenListener implements ChannelListener<ConnectedMes
                                         sendBuffer.flip();
                                         connection.send(pooled);
                                         ok = true;
-                                        channel.resumeReads();
+                                        messageReader.resumeReads();
                                     } finally {
                                         if (! ok) pooled.free();
                                     }
@@ -710,7 +707,7 @@ final class ClientConnectionOpenListener implements ChannelListener<ConnectedMes
                     }
                     case Protocol.AUTH_COMPLETE: {
                         client.trace("Client received authentication complete");
-                        channel.suspendReads();
+                        messageReader.suspendReads();
                         connection.getExecutor().execute(new Runnable() {
                             public void run() {
                                 try {
@@ -753,7 +750,7 @@ final class ClientConnectionOpenListener implements ChannelListener<ConnectedMes
                                         }
                                     };
                                     connection.getResult().setResult(connectionHandlerFactory);
-                                    channel.resumeReads();
+                                    messageReader.resumeReads();
                                     return;
                                 } finally {
                                     pooledBuffer.free();
@@ -801,7 +798,7 @@ final class ClientConnectionOpenListener implements ChannelListener<ConnectedMes
             if (authorizationID != null) {
                 principals.add(new UserPrincipal(authorizationID));
             }
-            final ConnectedMessageChannel channel = connection.getChannel();
+            final ConnectedStreamChannel channel = connection.getChannel();
             final InetSocketAddress address = channel.getPeerAddress(InetSocketAddress.class);
             if (address != null) {
                 principals.add(new InetAddressPrincipal(address.getAddress()));

@@ -27,43 +27,46 @@ import static org.xnio.IoUtils.safeClose;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.util.ArrayDeque;
+import java.util.Iterator;
 
 import org.xnio.Buffers;
 import org.xnio.ByteBufferPool;
 import org.xnio.ChannelListener;
 import org.xnio.Pooled;
-import org.xnio.conduits.ConduitStreamSourceChannel;
+import org.xnio.channels.ConnectedStreamChannel;
 
 /**
  * @author <a href="mailto:david.lloyd@redhat.com">David M. Lloyd</a>
  */
 final class MessageReader {
 
-    private final ConduitStreamSourceChannel sourceChannel;
+    private final ConnectedStreamChannel channel;
     private final ArrayDeque<ByteBuffer> queue = new ArrayDeque<>();
     private final Object lock;
     private final ByteBuffer[] array = new ByteBuffer[16];
+    private boolean readShutdown;
+    private boolean writeShutdown;
 
     static final Pooled<ByteBuffer> EOF_MARKER = Buffers.emptyPooledByteBuffer();
 
-    MessageReader(final ConduitStreamSourceChannel sourceChannel, final Object lock) {
-        this.sourceChannel = sourceChannel;
+    MessageReader(final ConnectedStreamChannel sourceChannel, final Object lock) {
+        this.channel = sourceChannel;
         this.lock = lock;
     }
 
-    ConduitStreamSourceChannel getSourceChannel() {
-        return sourceChannel;
+    ConnectedStreamChannel getChannel() {
+        return channel;
     }
 
     Pooled<ByteBuffer> getMessage() throws IOException {
         synchronized (lock) {
             for (;;) {
                 ByteBuffer first = queue.peekFirst();
-                if (first != null && first.remaining() >= 4) {
-                    int size = first.getInt(first.position());
+                if (first != null && remaining(4)) {
+                    int size = getInt(false);
                     if (remaining(size + 4)) {
                         ByteBuffer message = (size <= 64 ? ByteBufferPool.SMALL_HEAP : ByteBufferPool.MEDIUM_HEAP).allocate();
-                        first.getInt();
+                        getInt(true);
                         int cnt = 0;
                         while (cnt < size) {
                             cnt += Buffers.copy(size - cnt, message, first);
@@ -73,7 +76,25 @@ final class MessageReader {
                             }
                         }
                         message.flip();
+                        if (first != null && first.position() + 4 > first.limit()) {
+                            // compact & reflip just to make sure there's space for next time
+                            first.compact();
+                            first.flip();
+                        }
+                        RemoteLogger.conn.tracef("Received message %s", message);
                         return Buffers.globalPooledWrapper(message);
+                    } else {
+                        if (RemoteLogger.conn.isTraceEnabled()) {
+                            RemoteLogger.conn.tracef("Not enough buffered bytes for message of size %d+4 (%s)", Integer.valueOf(size), first);
+                        }
+                    }
+                } else {
+                    if (RemoteLogger.conn.isTraceEnabled()) {
+                        if (first != null) {
+                            RemoteLogger.conn.tracef("Not enough buffered bytes for message header (%s)", first);
+                        } else {
+                            RemoteLogger.conn.trace("No buffers in queue for message header");
+                        }
                     }
                 }
                 ByteBuffer[] b = array;
@@ -82,11 +103,13 @@ final class MessageReader {
                     last.compact();
                     b[0] = last;
                     ByteBufferPool.MEDIUM_DIRECT.allocate(b, 1);
+                    RemoteLogger.conn.tracef("Compacted existing buffer %s", last);
                 } else {
                     ByteBufferPool.MEDIUM_DIRECT.allocate(b, 0);
+                    RemoteLogger.conn.tracef("Allocated fresh buffers");
                 }
                 try {
-                    long res = sourceChannel.read(b);
+                    long res = channel.read(b);
                     if (res == -1) {
                         RemoteLogger.conn.trace("Received EOF");
                         return EOF_MARKER;
@@ -95,7 +118,9 @@ final class MessageReader {
                         RemoteLogger.conn.trace("No read bytes available");
                         return null;
                     }
-                    RemoteLogger.conn.tracef("Received %d bytes", (int) res);
+                    if (RemoteLogger.conn.isTraceEnabled()) {
+                        RemoteLogger.conn.tracef("Received %d bytes", Long.valueOf(res));
+                    }
                 } finally {
                     for (int i = 0; i < b.length; i++) {
                         final ByteBuffer buffer = b[i];
@@ -121,9 +146,40 @@ final class MessageReader {
         return false;
     }
 
+    private int getInt(boolean consume) {
+        // NOTE only works for 31-bit ints
+        int a = 0;
+        int i = 0;
+        Iterator<ByteBuffer> iterator = queue.iterator();
+        if (consume) {
+            while (iterator.hasNext()) {
+                ByteBuffer buffer = iterator.next();
+                while (buffer.hasRemaining()) {
+                    a = buffer.get() & 0xff | a << 8;
+                    if (i ++ == 3) {
+                        return a;
+                    }
+                }
+            }
+        } else {
+            int p;
+            while (iterator.hasNext()) {
+                ByteBuffer buffer = iterator.next();
+                p = buffer.position();
+                while (p < buffer.limit()) {
+                    a = buffer.get(p++) & 0xff | a << 8;
+                    if (i ++ == 3) {
+                        return a;
+                    }
+                }
+            }
+        }
+        return -1;
+    }
+
     public void close() {
         synchronized (lock) {
-            safeClose(sourceChannel);
+            safeClose(channel);
             ByteBuffer buffer;
             while ((buffer = queue.pollFirst()) != null) {
                 ByteBufferPool.free(buffer);
@@ -131,33 +187,49 @@ final class MessageReader {
         }
     }
 
-    public void setReadListener(final ChannelListener<? super ConduitStreamSourceChannel> readListener) {
+    public void setReadListener(final ChannelListener<? super ConnectedStreamChannel> readListener) {
         synchronized (lock) {
-            sourceChannel.setReadListener(readListener);
+            channel.getReadSetter().set(readListener);
         }
     }
 
     public void suspendReads() {
         synchronized (lock) {
-            getSourceChannel().suspendReads();
+            getChannel().suspendReads();
         }
     }
 
     public void resumeReads() {
         synchronized (lock) {
-            getSourceChannel().resumeReads();
+            getChannel().resumeReads();
         }
     }
 
     public void wakeupReads() {
         synchronized (lock) {
-            getSourceChannel().wakeupReads();
+            getChannel().wakeupReads();
         }
     }
 
     public void shutdownReads() throws IOException {
         synchronized (lock) {
-            getSourceChannel().shutdownReads();
+            if (readShutdown) return;
+            readShutdown = true;
+            if (writeShutdown) {
+                getChannel().close();
+            } else {
+                getChannel().shutdownReads();
+            }
+        }
+    }
+
+    public void finishedWrites() throws IOException {
+        synchronized (lock) {
+            if (writeShutdown) return;
+            writeShutdown = true;
+            if (readShutdown) {
+                getChannel().close();
+            }
         }
     }
 }

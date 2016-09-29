@@ -39,7 +39,6 @@ import org.xnio.Pool;
 import org.xnio.Pooled;
 import org.xnio.Result;
 import org.xnio.XnioExecutor;
-import org.xnio.channels.ConnectedMessageChannel;
 import org.xnio.channels.ConnectedStreamChannel;
 import org.xnio.channels.SslChannel;
 import org.xnio.sasl.SaslWrapper;
@@ -51,10 +50,8 @@ final class RemoteConnection {
 
     static final Pooled<ByteBuffer> STARTTLS_SENTINEL = Buffers.emptyPooledByteBuffer();
 
-    private static final String FQCN = RemoteConnection.class.getName();
     private final Pool<ByteBuffer> messageBufferPool;
-    private final ConnectedMessageChannel channel;
-    private final ConnectedStreamChannel underlyingChannel;
+    private final ConnectedStreamChannel channel;
     private final OptionMap optionMap;
     private final RemoteWriteListener writeListener = new RemoteWriteListener();
     private final Executor executor;
@@ -62,26 +59,27 @@ final class RemoteConnection {
     private volatile Result<ConnectionHandlerFactory> result;
     private volatile SaslWrapper saslWrapper;
     private final RemoteConnectionProvider remoteConnectionProvider;
+    private final MessageReader messageReader;
 
-    RemoteConnection(final Pool<ByteBuffer> messageBufferPool, final ConnectedStreamChannel underlyingChannel, final ConnectedMessageChannel channel, final OptionMap optionMap, final RemoteConnectionProvider remoteConnectionProvider) {
+    RemoteConnection(final Pool<ByteBuffer> messageBufferPool, final ConnectedStreamChannel channel, final OptionMap optionMap, final RemoteConnectionProvider remoteConnectionProvider) {
         this.messageBufferPool = messageBufferPool;
-        this.underlyingChannel = underlyingChannel;
         this.channel = channel;
         this.optionMap = optionMap;
         heartbeatInterval = optionMap.get(RemotingOptions.HEARTBEAT_INTERVAL, RemotingOptions.DEFAULT_HEARTBEAT_INTERVAL);
         this.executor = remoteConnectionProvider.getExecutor();
         this.remoteConnectionProvider = remoteConnectionProvider;
+        messageReader = new MessageReader(channel, writeListener.queue);
     }
 
     Pooled<ByteBuffer> allocate() {
         return messageBufferPool.allocate();
     }
 
-    void setReadListener(ChannelListener<? super ConnectedMessageChannel> listener, final boolean resume) {
-        RemoteLogger.log.logf(RemoteConnection.class.getName(), Logger.Level.TRACE, null, "Setting read listener to %s", listener);
-        channel.getReadSetter().set(listener);
+    void setReadListener(ChannelListener<? super ConnectedStreamChannel> listener, final boolean resume) {
+        RemoteLogger.log.tracef("Setting read listener to %s", listener);
+        messageReader.setReadListener(listener);
         if (listener != null && resume) {
-            channel.resumeReads();
+            messageReader.resumeReads();
         }
     }
 
@@ -102,7 +100,7 @@ final class RemoteConnection {
     }
 
     void handleException(IOException e, boolean log) {
-        RemoteLogger.conn.logf(RemoteConnection.class.getName(), Logger.Level.TRACE, e, "Connection error detail");
+        RemoteLogger.conn.trace("Connection error detail", e);
         if (log) {
             RemoteLogger.conn.connectionError(e);
         }
@@ -136,11 +134,11 @@ final class RemoteConnection {
         return optionMap;
     }
 
-    ConnectedMessageChannel getChannel() {
+    ConnectedStreamChannel getChannel() {
         return channel;
     }
 
-    ChannelListener<ConnectedMessageChannel> getWriteListener() {
+    ChannelListener<ConnectedStreamChannel> getWriteListener() {
         return writeListener;
     }
 
@@ -149,11 +147,15 @@ final class RemoteConnection {
     }
 
     public SslChannel getSslChannel() {
-        return underlyingChannel instanceof SslChannel ? (SslChannel) underlyingChannel : null;
+        return channel instanceof SslChannel ? (SslChannel) channel : null;
     }
 
     SaslWrapper getSaslWrapper() {
         return saslWrapper;
+    }
+
+    MessageReader getMessageReader() {
+        return messageReader;
     }
 
     void setSaslWrapper(final SaslWrapper saslWrapper) {
@@ -182,7 +184,7 @@ final class RemoteConnection {
             buffer.flip();
             send(pooled);
             ok = true;
-            channel.wakeupReads();
+            messageReader.wakeupReads();
         } finally {
             if (! ok) pooled.free();
         }
@@ -215,67 +217,108 @@ final class RemoteConnection {
         return writeListener.queue;
     }
 
-    final class RemoteWriteListener implements ChannelListener<ConnectedMessageChannel> {
+    static final int SEND_SIZE = 262144;
 
-        private final Queue<Pooled<ByteBuffer>> queue = new ArrayDeque<Pooled<ByteBuffer>>();
-        private XnioExecutor.Key heartKey;
-        private boolean closed;
+    final class RemoteWriteListener implements ChannelListener<ConnectedStreamChannel> {
+
+        final Queue<Pooled<ByteBuffer>> queue = new ArrayDeque<>();
+        XnioExecutor.Key heartKey;
+        boolean closed;
+        boolean startTls;
+        // compacted on lock entry
+        final ByteBuffer sendBuffer = ByteBuffer.allocateDirect(SEND_SIZE);
 
         RemoteWriteListener() {
         }
 
-        public void handleEvent(final ConnectedMessageChannel channel) {
+        public void handleEvent(final ConnectedStreamChannel channel) {
+            final ByteBuffer sendBuffer = this.sendBuffer;
+            final Queue<Pooled<ByteBuffer>> queue = this.queue;
+            Pooled<ByteBuffer> pooled;
             synchronized (queue) {
                 assert channel == getChannel();
-                Pooled<ByteBuffer> pooled;
-                final Queue<Pooled<ByteBuffer>> queue = this.queue;
                 try {
-                    while ((pooled = queue.peek()) != null) {
-                        final ByteBuffer buffer = pooled.getResource();
-                        if (buffer.hasRemaining()) {
-                            if (channel.send(buffer)) {
-                                RemoteLogger.conn.logf(FQCN, Logger.Level.TRACE, null, "Sent message %s (via queue)", buffer);
-                                queue.poll().free();
+                    for (;;) {
+                        while ((pooled = queue.peek()) != null) {
+                            final ByteBuffer buffer = pooled.getResource();
+                            final int remaining = buffer.remaining();
+                            if (remaining > 0) {
+                                if (sendBuffer.remaining() > remaining + 4) {
+                                    sendBuffer.putInt(remaining);
+                                    sendBuffer.put(buffer);
+                                    RemoteLogger.conn.tracef("Buffered message %s (via queue)", buffer);
+                                    queue.poll().free();
+                                } else {
+                                    // we've filled as much as we can
+                                    break;
+                                }
                             } else {
-                                // try again later
-                                return;
+                                if (pooled == STARTTLS_SENTINEL) {
+                                    startTls = true;
+                                    break;
+                                } else {
+                                    // otherwise skip other empty message rather than try and write it
+                                    queue.poll().free();
+                                }
                             }
-                        } else {
-                            if (pooled == STARTTLS_SENTINEL) {
+                        }
+                        if (sendBuffer.position() == 0) {
+                            if (startTls) {
                                 if (channel.flush()) {
                                     final SslChannel sslChannel = getSslChannel();
                                     assert sslChannel != null; // because STARTTLS would be false in this case
+                                    RemoteLogger.conn.trace("Firing STARTTLS handshake");
                                     sslChannel.startHandshake();
+                                    startTls = false;
                                 } else {
                                     // try again later
                                     return;
                                 }
+                            } else {
+                                // nothing to send, time to flush
+                                break;
                             }
-                            // otherwise skip other empty message rather than try and write it
-                            queue.poll().free();
+                        } else {
+                            sendBuffer.flip();
+                            long res;
+                            try {
+                                res = channel.write(sendBuffer);
+                                if (res > 0 && RemoteLogger.conn.isTraceEnabled()) {
+                                    RemoteLogger.conn.tracef("Flushed %d bytes", Long.valueOf(res));
+                                }
+                            } finally {
+                                sendBuffer.compact();
+                            }
+                            if (res == 0) {
+                                RemoteLogger.conn.trace("No bytes flushed; exiting");
+                                // try again later
+                                return;
+                            }
                         }
                     }
                     if (channel.flush()) {
-                        RemoteLogger.conn.logf(FQCN, Logger.Level.TRACE, null, "Flushed channel");
+                        RemoteLogger.conn.trace("Flushed channel");
                         if (closed) {
                             terminateHeartbeat();
                             // End of queue reached; shut down and try to flush the remainder
                             channel.shutdownWrites();
                             if (channel.flush()) {
-                                RemoteLogger.conn.logf(FQCN, Logger.Level.TRACE, null, "Shut down writes on channel");
+                                getMessageReader().finishedWrites();
+                                RemoteLogger.conn.trace("Shut down writes on channel");
                                 return;
                             }
                             // either this is successful and no more notifications will come, or not and it will be retried
                             // either way we're done here
                             return;
                         } else {
-                            this.heartKey = channel.getWriteThread().executeAfter(heartbeatCommand, heartbeatInterval, TimeUnit.MILLISECONDS);
+                            this.heartKey = channel.getIoThread().executeAfter(heartbeatCommand, heartbeatInterval, TimeUnit.MILLISECONDS);
                         }
                         channel.suspendWrites();
+                        RemoteLogger.conn.trace("Writes suspended");
                     }
                 } catch (IOException e) {
                     handleException(e, false);
-                    channel.wakeupReads();
+                    messageReader.wakeupReads();
                     while ((pooled = queue.poll()) != null) {
                         pooled.free();
                     }
@@ -288,7 +331,7 @@ final class RemoteConnection {
             synchronized (queue) {
                 closed = true;
                 terminateHeartbeat();
-                final ConnectedMessageChannel channel = getChannel();
+                final ConnectedStreamChannel channel = getChannel();
                 try {
                     if (! queue.isEmpty()) {
                         channel.resumeWrites();
@@ -299,10 +342,11 @@ final class RemoteConnection {
                         channel.resumeWrites();
                         return;
                     }
-                    RemoteLogger.conn.logf(FQCN, Logger.Level.TRACE, null, "Shut down writes on channel");
+                    getMessageReader().finishedWrites();
+                    RemoteLogger.conn.trace("Shut down writes on channel");
                 } catch (IOException e) {
                     handleException(e, false);
-                    channel.wakeupReads();
+                    messageReader.wakeupReads();
                     Pooled<ByteBuffer> unqueued;
                     while ((unqueued = queue.poll()) != null) {
                         unqueued.free();
@@ -321,7 +365,7 @@ final class RemoteConnection {
                         if (heartKey != null) heartKey.remove();
                         if (closed) { pooled.free(); return; }
                         if (close) { closed = true; }
-                        final ConnectedMessageChannel channel = getChannel();
+                        final ConnectedStreamChannel channel = getChannel();
                         boolean free = true;
                         try {
                             final SaslWrapper wrapper = saslWrapper;
@@ -333,16 +377,17 @@ final class RemoteConnection {
                                 buffer.flip();
                             }
                             final ByteBuffer buffer = pooled.getResource();
-                            RemoteLogger.conn.logf(FQCN, Logger.Level.TRACE, null, "Can't directly send message %s, enqueued", buffer);
+                            RemoteLogger.conn.tracef("Enqueued %s", buffer);
                             final boolean empty = queue.isEmpty();
                             queue.add(pooled);
                             free = false;
                             if (empty) {
                                 channel.resumeWrites();
+                                RemoteLogger.conn.trace("Resumed writes");
                             }
                         } catch (IOException e) {
                             handleException(e, false);
-                            channel.wakeupReads();
+                            messageReader.wakeupReads();
                             Pooled<ByteBuffer> unqueued;
                             while ((unqueued = queue.poll()) != null) {
                                 unqueued.free();

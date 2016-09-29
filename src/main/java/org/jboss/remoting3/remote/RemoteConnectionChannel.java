@@ -33,7 +33,6 @@ import java.util.Queue;
 import java.util.Random;
 
 import java.util.Set;
-import java.util.concurrent.Executor;
 import java.util.concurrent.atomic.AtomicIntegerFieldUpdater;
 import org.jboss.remoting3.Attachments;
 import org.jboss.remoting3.Channel;
@@ -48,8 +47,6 @@ import org.jboss.remoting3.spi.ConnectionHandlerContext;
 import org.xnio.Bits;
 import org.xnio.Option;
 import org.xnio.Pooled;
-import org.xnio.channels.Channels;
-import org.xnio.channels.ConnectedMessageChannel;
 
 /**
  * @author <a href="mailto:david.lloyd@redhat.com">David M. Lloyd</a>

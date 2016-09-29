@@ -32,7 +32,7 @@ import org.jboss.remoting3.NotOpenException;
 import org.xnio.BrokenPipeException;
 import org.xnio.IoUtils;
 import org.xnio.Pooled;
-import org.xnio.channels.ConnectedMessageChannel;
+import org.xnio.channels.ConnectedStreamChannel;
 import org.xnio.streams.BufferPipeOutputStream;
 
 import static java.lang.Thread.holdsLock;
@@ -97,7 +97,7 @@ final class OutboundMessage extends MessageOutputStream {
                     pipeOutputStream.notifyAll();
                 }
                 final ByteBuffer buffer = pooledBuffer.getResource();
-                final ConnectedMessageChannel messageChannel = channel.getRemoteConnection().getChannel();
+                final ConnectedStreamChannel messageChannel = channel.getRemoteConnection().getChannel();
                 final boolean badMsgSize = channel.getConnectionHandler().isFaultyMessageSize();
                 final int msgSize = badMsgSize ? buffer.remaining() : buffer.remaining() - 8;
                 boolean sendCancel = cancelled && ! cancelSent;

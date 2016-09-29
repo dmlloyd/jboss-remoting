@@ -66,7 +66,6 @@ import org.xnio.XnioWorker;
 import org.xnio.channels.AcceptingChannel;
 import org.xnio.channels.ConnectedSslStreamChannel;
 import org.xnio.channels.ConnectedStreamChannel;
-import org.xnio.channels.FramedMessageChannel;
 import org.xnio.ssl.XnioSsl;
 
 /**
@@ -174,10 +173,9 @@ class RemoteConnectionProvider extends AbstractHandleableCloseable<ConnectionPro
                 } catch (IOException e) {
                     // ignore
                 }
-                Pool<ByteBuffer> messageBufferPool = USE_POOLING ? GLOBAL_POOL : Buffers.allocatedBufferPool(BufferAllocator.BYTE_BUFFER_ALLOCATOR, 8192);
+                Pool<ByteBuffer> messageBufferPool = Buffers.allocatedBufferPool(BufferAllocator.BYTE_BUFFER_ALLOCATOR, 8192);
                 if (LEAK_DEBUGGING) messageBufferPool = new DebuggingBufferPool(messageBufferPool);
-                final FramedMessageChannel messageChannel = new FramedMessageChannel(channel, ByteBuffer.allocate(8192 + 4), ByteBuffer.allocate(8192 + 4));
-                final RemoteConnection remoteConnection = new RemoteConnection(messageBufferPool, channel, messageChannel, connectOptions, RemoteConnectionProvider.this);
+                final RemoteConnection remoteConnection = new RemoteConnection(messageBufferPool, channel, connectOptions, RemoteConnectionProvider.this);
                 cancellableResult.addCancelHandler(new Cancellable() {
                     @Override
                     public Cancellable cancel() {
@@ -189,9 +187,9 @@ class RemoteConnectionProvider extends AbstractHandleableCloseable<ConnectionPro
                     }
                 });
                 remoteConnection.setResult(cancellableResult);
-                messageChannel.getWriteSetter().set(remoteConnection.getWriteListener());
+                channel.getWriteSetter().set(remoteConnection.getWriteListener());
                 final ClientConnectionOpenListener openListener = new ClientConnectionOpenListener(remoteConnection, connectionProviderContext, callbackHandler, accessControlContext , connectOptions);
-                openListener.handleEvent(messageChannel);
+                openListener.handleEvent(channel);
             }
         };
         final IoFuture<? extends ConnectedStreamChannel> future;
@@ -326,7 +324,7 @@ class RemoteConnectionProvider extends AbstractHandleableCloseable<ConnectionPro
             this.serverOptionMap = serverOptionMap;
             this.serverAuthenticationProvider = serverAuthenticationProvider;
             this.accessControlContext = accessControlContext;
-            Pool<ByteBuffer> pool = USE_POOLING ? GLOBAL_POOL : Buffers.allocatedBufferPool(BufferAllocator.BYTE_BUFFER_ALLOCATOR, 8192);
+            Pool<ByteBuffer> pool = Buffers.allocatedBufferPool(BufferAllocator.BYTE_BUFFER_ALLOCATOR, 8192);
             messageBufferPool = LEAK_DEBUGGING ? new DebuggingBufferPool(pool) : pool;
         }
 
@@ -347,12 +345,11 @@ class RemoteConnectionProvider extends AbstractHandleableCloseable<ConnectionPro
                 // ignore
             }
 
-            final FramedMessageChannel messageChannel = new FramedMessageChannel(accepted, ByteBuffer.allocate(8192 + 4), ByteBuffer.allocate(8192 + 4));
-            final RemoteConnection connection = new RemoteConnection(messageBufferPool, accepted, messageChannel, serverOptionMap, RemoteConnectionProvider.this);
+            final RemoteConnection connection = new RemoteConnection(messageBufferPool, accepted, serverOptionMap, RemoteConnectionProvider.this);
             final ServerConnectionOpenListener openListener = new ServerConnectionOpenListener(connection, connectionProviderContext, serverAuthenticationProvider, serverOptionMap, accessControlContext);
-            messageChannel.getWriteSetter().set(connection.getWriteListener());
+            accepted.getWriteSetter().set(connection.getWriteListener());
             RemoteLogger.log.tracef("Accepted connection from %s to %s", accepted.getPeerAddress(), accepted.getLocalAddress());
-            openListener.handleEvent(messageChannel);
+            openListener.handleEvent(accepted);
         }
     }
 

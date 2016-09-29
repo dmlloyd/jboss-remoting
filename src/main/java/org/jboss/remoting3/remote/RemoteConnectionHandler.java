@@ -52,7 +52,7 @@ import org.xnio.IoUtils;
 import org.xnio.OptionMap;
 import org.xnio.Pooled;
 import org.xnio.Result;
-import org.xnio.channels.ConnectedMessageChannel;
+import org.xnio.channels.ConnectedStreamChannel;
 import org.xnio.channels.SslChannel;
 
 final class RemoteConnectionHandler extends AbstractHandleableCloseable<ConnectionHandler> implements ConnectionHandler {
@@ -484,7 +484,7 @@ final class RemoteConnectionHandler extends AbstractHandleableCloseable<Connecti
             final boolean receivedCloseReq = Bits.allAreSet(state, RECEIVED_CLOSE_REQ);
             final int inboundChannels = (state & INBOUND_CHANNELS_MASK) >>> Integer.numberOfTrailingZeros(ONE_INBOUND_CHANNEL);
             final int outboundChannels = (state & OUTBOUND_CHANNELS_MASK) >>> Integer.numberOfTrailingZeros(ONE_OUTBOUND_CHANNEL);
-            final ConnectedMessageChannel channel = remoteConnection.getChannel();
+            final ConnectedStreamChannel channel = remoteConnection.getChannel();
             final SocketAddress localAddress = channel.getLocalAddress();
             final SocketAddress peerAddress = channel.getPeerAddress();
             b.append("    ").append("Connection ").append(localAddress).append(" <-> ").append(peerAddress).append('\n');

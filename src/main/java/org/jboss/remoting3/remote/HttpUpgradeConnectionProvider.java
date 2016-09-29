@@ -57,7 +57,6 @@ import org.xnio.channels.AssembledConnectedSslStreamChannel;
 import org.xnio.channels.AssembledConnectedStreamChannel;
 import org.xnio.channels.ConnectedSslStreamChannel;
 import org.xnio.channels.ConnectedStreamChannel;
-import org.xnio.channels.FramedMessageChannel;
 import org.xnio.ssl.SslConnection;
 import org.xnio.http.HandshakeChecker;
 import org.xnio.http.HttpUpgrade;
@@ -75,7 +74,7 @@ import org.xnio.ssl.XnioSsl;
  * Other than that the handshake process is identical. Once the upgrade is completed the remoting handshake takes
  * place as normal.
  *
- * @see http://tools.ietf.org/html/rfc6455
+ * See also http://tools.ietf.org/html/rfc6455
  * @author Stuart Douglas
  */
 final class HttpUpgradeConnectionProvider extends RemoteConnectionProvider {
@@ -225,15 +224,14 @@ final class HttpUpgradeConnectionProvider extends RemoteConnectionProvider {
                 // ignore
             }
 
-            Pool<ByteBuffer> messageBufferPool = RemoteConnectionProvider.USE_POOLING ? GLOBAL_POOL : Buffers.allocatedBufferPool(BufferAllocator.BYTE_BUFFER_ALLOCATOR, 8192);
+            Pool<ByteBuffer> messageBufferPool = Buffers.allocatedBufferPool(BufferAllocator.BYTE_BUFFER_ALLOCATOR, 8192);
             if (RemoteConnectionProvider.LEAK_DEBUGGING) messageBufferPool = new DebuggingBufferPool(messageBufferPool);
 
-            final FramedMessageChannel messageChannel = new FramedMessageChannel(channel, ByteBuffer.allocate(8192 + 4), ByteBuffer.allocate(8192 + 4));
-            final RemoteConnection connection = new RemoteConnection(messageBufferPool, channel, messageChannel, optionMap, HttpUpgradeConnectionProvider.this);
+            final RemoteConnection connection = new RemoteConnection(messageBufferPool, channel, optionMap, HttpUpgradeConnectionProvider.this);
             final ServerConnectionOpenListener openListener = new ServerConnectionOpenListener(connection, getConnectionProviderContext(), authenticationProvider, optionMap, accessControlContext);
-            messageChannel.getWriteSetter().set(connection.getWriteListener());
+            channel.getWriteSetter().set(connection.getWriteListener());
             RemoteLogger.log.tracef("Accepted connection from %s to %s", channel.getPeerAddress(), channel.getLocalAddress());
-            openListener.handleEvent(messageChannel);
+            openListener.handleEvent(channel);
         }
     }
 
