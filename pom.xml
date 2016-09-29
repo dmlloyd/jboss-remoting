@@ -56,8 +56,8 @@
         <test.level>INFO</test.level>
         <leak.debug>false</leak.debug>
 
-        <maven.compiler.source>1.6</maven.compiler.source>
-        <maven.compiler.target>1.6</maven.compiler.target>
+        <maven.compiler.source>1.7</maven.compiler.source>
+        <maven.compiler.target>1.7</maven.compiler.target>
     </properties>
 
     <licenses>
