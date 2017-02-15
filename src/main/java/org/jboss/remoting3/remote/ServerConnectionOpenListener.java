@@ -223,22 +223,20 @@ final class ServerConnectionOpenListener  implements ChannelListener<ConnectedMe
             boolean free = true;
             try {
                 final ByteBuffer receiveBuffer = pooledBuffer.getResource();
-                synchronized (connection.getLock()) {
-                    final int res;
-                    try {
-                        res = channel.receive(receiveBuffer);
-                    } catch (IOException e) {
-                        connection.handleException(e);
-                        return;
-                    }
-                    if (res == 0) {
-                        return;
-                    }
-                    if (res == -1) {
-                        log.trace("Received connection end-of-stream");
-                        connection.handlePreAuthCloseRequest();
-                        return;
-                    }
+                final int res;
+                try {
+                    res = channel.receive(receiveBuffer);
+                } catch (IOException e) {
+                    connection.handleException(e);
+                    return;
+                }
+                if (res == 0) {
+                    return;
+                }
+                if (res == -1) {
+                    log.trace("Received connection end-of-stream");
+                    connection.handlePreAuthCloseRequest();
+                    return;
                 }
                 receiveBuffer.flip();
                 final byte msgType = receiveBuffer.get();
@@ -274,11 +272,7 @@ final class ServerConnectionOpenListener  implements ChannelListener<ConnectedMe
                             connection.send(pooled);
                             ok = true;
                             if (starttls) {
-                                try {
-                                    connection.getSslChannel().startHandshake();
-                                } catch (IOException e) {
-                                    connection.handleException(e);
-                                }
+                                connection.send(RemoteConnection.STARTTLS_SENTINEL);
                             }
                             connection.setReadListener(new Initial(), true);
                             return;
@@ -303,34 +297,23 @@ final class ServerConnectionOpenListener  implements ChannelListener<ConnectedMe
                         final SaslServerFactory saslServerFactory = allowedMechanisms.get(mechName);
                         final AuthorizingCallbackHandler callbackHandler = serverAuthenticationProvider.getCallbackHandler(mechName);
                         if (saslServerFactory == null || callbackHandler == null) {
-                            // reject
-                            authLog.rejectedInvalidMechanism(mechName);
-                            final Pooled<ByteBuffer> pooled = connection.allocate();
-                            boolean ok = false;
-                            try {
-                                final ByteBuffer sendBuffer = pooled.getResource();
-                                sendBuffer.put(Protocol.AUTH_REJECTED);
-                                sendBuffer.flip();
-                                connection.send(pooled);
-                                ok = true;
-                                return;
-                            } finally {
-                                if (! ok) pooled.free();
-                            }
+                            rejectAuthentication(mechName);
+                            return;
                         }
                         final String protocol = optionMap.contains(RemotingOptions.SASL_PROTOCOL) ? optionMap.get(RemotingOptions.SASL_PROTOCOL) : RemotingOptions.DEFAULT_SASL_PROTOCOL;
                         final SaslServer saslServer = AccessController.doPrivileged(new PrivilegedAction<SaslServer>() {
+                            @Override
                             public SaslServer run() {
                                 try {
                                     return saslServerFactory.createSaslServer(mechName, protocol, serverName, propertyMap, callbackHandler);
                                 } catch (SaslException e) {
-                                    connection.handleException(e);
+                                    server.trace("Unable to create SaslServer", e);
                                     return null;
                                 }
                             }
                         }, accessControlContext);
                         if (saslServer == null) {
-                            // bail out
+                            rejectAuthentication(mechName);
                             return;
                         }
                         connection.getChannel().suspendReads();
@@ -352,6 +335,22 @@ final class ServerConnectionOpenListener  implements ChannelListener<ConnectedMe
                 return;
             } finally {
                 if (free) pooledBuffer.free();
+            }
+        }
+
+        void rejectAuthentication(String mechName) {
+            // reject
+            authLog.rejectedInvalidMechanism(mechName);
+            final Pooled<ByteBuffer> pooled = connection.allocate();
+            boolean ok = false;
+            try {
+                final ByteBuffer sendBuffer = pooled.getResource();
+                sendBuffer.put(Protocol.AUTH_REJECTED);
+                sendBuffer.flip();
+                connection.send(pooled);
+                ok = true;
+            } finally {
+                if (! ok) pooled.free();
             }
         }
 
@@ -592,24 +591,22 @@ final class ServerConnectionOpenListener  implements ChannelListener<ConnectedMe
             boolean free = true;
             try {
                 final ByteBuffer buffer = pooledBuffer.getResource();
-                synchronized (connection.getLock()) {
-                    final int res;
-                    try {
-                        res = channel.receive(buffer);
-                    } catch (IOException e) {
-                        connection.handleException(e);
-                        saslDispose(saslServer);
-                        return;
-                    }
-                    if (res == -1) {
-                        log.trace("Received connection end-of-stream");
-                        connection.handlePreAuthCloseRequest();
-                        saslDispose(saslServer);
-                        return;
-                    }
-                    if (res == 0) {
-                        return;
-                    }
+                final int res;
+                try {
+                    res = channel.receive(buffer);
+                } catch (IOException e) {
+                    connection.handleException(e);
+                    saslDispose(saslServer);
+                    return;
+                }
+                if (res == -1) {
+                    log.trace("Received connection end-of-stream");
+                    connection.handlePreAuthCloseRequest();
+                    saslDispose(saslServer);
+                    return;
+                }
+                if (res == 0) {
+                    return;
                 }
                 server.tracef("Received %s", buffer);
                 buffer.flip();
