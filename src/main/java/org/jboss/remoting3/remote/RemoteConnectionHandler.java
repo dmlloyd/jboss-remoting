@@ -23,11 +23,13 @@
 package org.jboss.remoting3.remote;
 
 import static org.jboss.remoting3.remote.RemoteLogger.log;
+import static org.xnio.Bits.anyAreSet;
 
 import java.io.IOException;
 import java.net.SocketAddress;
 import java.nio.ByteBuffer;
 import java.security.Principal;
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.Random;
@@ -356,6 +358,12 @@ final class RemoteConnectionHandler extends AbstractHandleableCloseable<Connecti
                                 Long.valueOf(inboundMessageSizeOptionValue), Long.valueOf(inboundMessageSize)
                             );
                         }
+                        if (anyAreSet(channelState, RECEIVED_CLOSE_REQ | SENT_CLOSE_REQ)) {
+                            // there's a chance that the connection was closed after the channel open was registered in the map here
+                            pendingChannels.remove(pendingChannel);
+                            result.setCancelled();
+                            return IoUtils.nullCancellable();
+                        }
 
                         Pooled<ByteBuffer> pooled = remoteConnection.allocate();
                         try {
@@ -411,6 +419,7 @@ final class RemoteConnectionHandler extends AbstractHandleableCloseable<Connecti
     protected void closeAction() throws IOException {
         sendCloseRequest();
         remoteConnection.shutdownWrites();
+        IoUtils.safeShutdownReads(remoteConnection.getChannel());
         // now these guys can't send useless messages
         closePendingChannels();
         closeAllChannels();
@@ -418,18 +427,22 @@ final class RemoteConnectionHandler extends AbstractHandleableCloseable<Connecti
     }
 
     private void closePendingChannels() {
+        final ArrayList<PendingChannel> list;
         synchronized (remoteConnection.getLock()) {
-            for (PendingChannel pendingChannel : pendingChannels) {
-                pendingChannel.getResult().setCancelled();
-            }
+            list = new ArrayList<PendingChannel>(pendingChannels);
+        }
+        for (PendingChannel pendingChannel : list) {
+            pendingChannel.getResult().setCancelled();
         }
     }
 
     private void closeAllChannels() {
+        final ArrayList<RemoteConnectionChannel> list;
         synchronized (remoteConnection.getLock()) {
-            for (RemoteConnectionChannel channel : channels) {
-                channel.closeAsync();
-            }
+            list = new ArrayList<RemoteConnectionChannel>(channels);
+        }
+        for (RemoteConnectionChannel channel : list) {
+            channel.closeAsync();
         }
     }
 

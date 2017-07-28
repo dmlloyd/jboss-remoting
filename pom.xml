@@ -31,14 +31,14 @@
 
     <groupId>org.jboss.remoting</groupId>
     <artifactId>jboss-remoting</artifactId>
-    <version>4.0.13.Final-SNAPSHOT</version>
+    <version>4.0.24.Final-SNAPSHOT</version>
 
     <packaging>jar</packaging>
 
     <parent>
         <groupId>org.jboss</groupId>
         <artifactId>jboss-parent</artifactId>
-        <version>12</version>
+        <version>20</version>
     </parent>
 
     <properties>
@@ -47,12 +47,12 @@
         <apacheds.jdbm1.version>2.0.0-M2</apacheds.jdbm1.version>
         <apacheds.shared.version>1.0.0-M13</apacheds.shared.version>
         <apacheds.api.version>1.0.0-M16</apacheds.api.version>        
-        <xnio.version>3.2.0.Final</xnio.version>
+        <xnio.version>3.3.4.Final</xnio.version>
         <logging.version>3.1.4.GA</logging.version>
         <logging-tools.version>1.1.0.Final</logging-tools.version>
         <logmanager.version>1.5.2.Final</logmanager.version>
         <junit.version>4.8.2</junit.version>
-        <byteman-version>2.0.0</byteman-version>
+        <byteman-version>3.0.3</byteman-version>
         <test.level>INFO</test.level>
         <leak.debug>false</leak.debug>
 
@@ -236,12 +236,6 @@
                     <enableAssertions>true</enableAssertions>
                     <redirectTestOutputToFile>true</redirectTestOutputToFile>
                 </configuration>
-            </plugin>
-            <plugin>
-                <artifactId>maven-compiler-plugin</artifactId>
-            </plugin>
-            <plugin>
-                <artifactId>maven-source-plugin</artifactId>
             </plugin>
             <plugin>
                 <artifactId>maven-jar-plugin</artifactId>

@@ -44,7 +44,6 @@ import org.jboss.remoting3.spi.ConnectionProviderContext;
 import org.jboss.remoting3.spi.ExternalConnectionProvider;
 import org.xnio.BufferAllocator;
 import org.xnio.Buffers;
-import org.xnio.ByteBufferSlicePool;
 import org.xnio.ChannelListener;
 import org.xnio.ChannelListeners;
 import org.xnio.FailedIoFuture;
@@ -91,6 +90,8 @@ final class HttpUpgradeConnectionProvider extends RemoteConnectionProvider {
     public static final String SEC_JBOSS_REMOTING_ACCEPT= "sec-jbossremoting-accept";
     public static final String UPGRADE = "Upgrade";
 
+    private static final int BUFFER_SIZE = 8192;
+
     private final ProviderInterface providerInterface = new ProviderInterface();
 
     HttpUpgradeConnectionProvider(final OptionMap optionMap, final ConnectionProviderContext connectionProviderContext) throws IOException {
@@ -111,7 +112,7 @@ final class HttpUpgradeConnectionProvider extends RemoteConnectionProvider {
         final String secKey = createSecKey();
         headers.put(SEC_JBOSS_REMOTING_KEY, secKey);
 
-        final FutureResult<ConnectedStreamChannel> future = new FutureResult<ConnectedStreamChannel>();
+        final FutureResult<ConnectedStreamChannel> future = new FutureResult<ConnectedStreamChannel>(getExecutor());
 
         HttpUpgrade.performUpgrade(getXnioWorker(), (InetSocketAddress) bindAddress, uri, headers, new ChannelListener<StreamConnection>() {
             @Override
@@ -147,7 +148,7 @@ final class HttpUpgradeConnectionProvider extends RemoteConnectionProvider {
         final String secKey = createSecKey();
         headers.put(SEC_JBOSS_REMOTING_KEY, secKey);
 
-        final FutureResult<ConnectedSslStreamChannel> future = new FutureResult<ConnectedSslStreamChannel>();
+        final FutureResult<ConnectedSslStreamChannel> future = new FutureResult<ConnectedSslStreamChannel>(getExecutor());
 
         HttpUpgrade.performUpgrade(getXnioWorker(), xnioSsl, (InetSocketAddress) bindAddress, uri, headers, new ChannelListener<SslConnection>() {
             @Override
@@ -216,6 +217,9 @@ final class HttpUpgradeConnectionProvider extends RemoteConnectionProvider {
 
         @Override
         public void adapt(final ConnectedStreamChannel channel) {
+            if (channel.getWorker() != getXnioWorker()) {
+                throw RemoteLogger.log.invalidWorker();
+            }
 
             try {
                 channel.setOption(Options.TCP_NODELAY, Boolean.TRUE);
@@ -223,14 +227,10 @@ final class HttpUpgradeConnectionProvider extends RemoteConnectionProvider {
                 // ignore
             }
 
-            final int messageBufferSize = getDefaultBufferSize();
-            Pool<ByteBuffer> messageBufferPool = RemoteConnectionProvider.USE_POOLING ? new ByteBufferSlicePool(BufferAllocator.BYTE_BUFFER_ALLOCATOR, messageBufferSize, messageBufferSize * 2) : Buffers.allocatedBufferPool(BufferAllocator.BYTE_BUFFER_ALLOCATOR, messageBufferSize);
+            Pool<ByteBuffer> messageBufferPool = RemoteConnectionProvider.USE_POOLING ? GLOBAL_POOL : Buffers.allocatedBufferPool(BufferAllocator.BYTE_BUFFER_ALLOCATOR, BUFFER_SIZE);
             if (RemoteConnectionProvider.LEAK_DEBUGGING) messageBufferPool = new DebuggingBufferPool(messageBufferPool);
-            final int framingBufferSize = messageBufferSize + 4;
-            Pool<ByteBuffer> framingBufferPool = Buffers.allocatedBufferPool(BufferAllocator.BYTE_BUFFER_ALLOCATOR, framingBufferSize);
-            if (RemoteConnectionProvider.LEAK_DEBUGGING) framingBufferPool = new DebuggingBufferPool(framingBufferPool);
 
-            final FramedMessageChannel messageChannel = new FramedMessageChannel(channel, framingBufferPool.allocate(), framingBufferPool.allocate());
+            final RemotingMessageChannel messageChannel = new RemotingMessageChannel(channel, ByteBuffer.allocate(BUFFER_SIZE + 4), ByteBuffer.allocate(BUFFER_SIZE + 4));
             final RemoteConnection connection = new RemoteConnection(messageBufferPool, channel, messageChannel, optionMap, HttpUpgradeConnectionProvider.this);
             final ServerConnectionOpenListener openListener = new ServerConnectionOpenListener(connection, getConnectionProviderContext(), authenticationProvider, optionMap, accessControlContext);
             messageChannel.getWriteSetter().set(connection.getWriteListener());
