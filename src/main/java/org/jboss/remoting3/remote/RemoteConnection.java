@@ -116,6 +116,7 @@ final class RemoteConnection {
         synchronized (getLock()) {
             IoUtils.safeClose(connection);
         }
+        connection.getSourceChannel().wakeupReads();
         final Result<ConnectionHandlerFactory> result = this.result;
         if (result != null) {
             result.setException(e);

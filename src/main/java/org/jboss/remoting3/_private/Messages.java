@@ -48,9 +48,9 @@ public interface Messages extends BasicLogger {
     Messages server = Logger.getMessageLogger(Messages.class, "org.jboss.remoting.remote.server");
     Messages client = Logger.getMessageLogger(Messages.class, "org.jboss.remoting.remote.client");
 
-    @Message(id = 200, value = "Remote connection failed: %s")
+    @Message(id = 200, value = "Remote connection failed")
     @LogMessage(level = DEBUG)
-    void connectionError(IOException cause);
+    void connectionError(@Cause IOException cause);
 
     @Message(id = 201, value = "Received invalid message on %s")
     IOException invalidMessage(Object connection);
