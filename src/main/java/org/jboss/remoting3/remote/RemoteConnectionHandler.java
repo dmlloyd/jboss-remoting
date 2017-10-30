@@ -144,9 +144,9 @@ final class RemoteConnectionHandler extends AbstractHandleableCloseable<Connecti
     }
 
     void handleInboundChannelClosed() {
-        int oldState;
-        oldState = incrementState(-ONE_INBOUND_CHANNEL);
-        if (oldState == (SENT_CLOSE_REQ | RECEIVED_CLOSE_REQ)) {
+        int newState;
+        newState = incrementState(-ONE_INBOUND_CHANNEL);
+        if (newState == (SENT_CLOSE_REQ | RECEIVED_CLOSE_REQ)) {
             log.tracef("Closed inbound channel on %s (shutting down)", this);
             remoteConnection.shutdownWrites();
         } else {
@@ -155,9 +155,9 @@ final class RemoteConnectionHandler extends AbstractHandleableCloseable<Connecti
     }
 
     void handleOutboundChannelClosed() {
-        int oldState;
-        oldState = incrementState(-ONE_OUTBOUND_CHANNEL);
-        if (oldState == (SENT_CLOSE_REQ | RECEIVED_CLOSE_REQ)) {
+        int newState;
+        newState = incrementState(-ONE_OUTBOUND_CHANNEL);
+        if (newState == (SENT_CLOSE_REQ | RECEIVED_CLOSE_REQ)) {
             log.tracef("Closed outbound channel on %s (shutting down)", this);
             remoteConnection.shutdownWrites();
         } else {
@@ -245,9 +245,9 @@ final class RemoteConnectionHandler extends AbstractHandleableCloseable<Connecti
     }
 
     private int incrementState(final int count) {
-        final int oldState = channelStateUpdater.getAndAdd(this, count);
+        final int newState = channelStateUpdater.addAndGet(this, count);
         if (log.isTraceEnabled()) {
-            final int newState = oldState + count;
+            final int oldState = newState - count;
             log.tracef("CAS %s\n\told: RS=%s WS=%s IC=%d OC=%d\n\tnew: RS=%s WS=%s IC=%d OC=%d", this,
                     Boolean.valueOf((oldState & RECEIVED_CLOSE_REQ) != 0),
                     Boolean.valueOf((oldState & SENT_CLOSE_REQ) != 0),
@@ -259,7 +259,7 @@ final class RemoteConnectionHandler extends AbstractHandleableCloseable<Connecti
                     Integer.valueOf((newState & OUTBOUND_CHANNELS_MASK) >> Integer.numberOfTrailingZeros(ONE_OUTBOUND_CHANNEL))
                     );
         }
-        return oldState;
+        return newState;
     }
 
     private boolean casState(final int oldState, final int newState) {
