@@ -427,7 +427,7 @@ final class RemoteConnectionChannel extends AbstractHandleableCloseable<Channel>
                             final Receiver receiver = nextReceiver;
                             nextReceiver = null;
                             try {
-                                getExecutor().execute(() -> receiver.handleMessage(RemoteConnectionChannel.this, inboundMessage.messageInputStream));
+                                receiver.handleMessage(RemoteConnectionChannel.this, inboundMessage.messageInputStream);
                                 ok2 = true;
                             } catch (Throwable t) {
                                 connection.handleException(new IOException("Fatal connection error", t));
