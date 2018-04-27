@@ -320,6 +320,11 @@ public final class RemotingOptions {
     public static final Option<String> SASL_PROTOCOL = Option.simple(RemotingOptions.class, "SASL_PROTOCOL", String.class);
 
     /**
+     * Dispatch incoming messages to a worker thread instead of handling it on the I/O thread.
+     */
+    public static final Option<Boolean> DISPATCH_INCOMING = Option.simple(RemotingOptions.class, "DISPATCH_INCOMING", Boolean.class);
+
+    /**
      * The default SASL protocol name.
      */
     public static final String DEFAULT_SASL_PROTOCOL = "remote";

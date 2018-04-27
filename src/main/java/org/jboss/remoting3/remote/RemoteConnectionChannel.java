@@ -29,6 +29,7 @@ import java.util.Queue;
 import java.util.Random;
 
 import java.util.Set;
+import java.util.concurrent.Executor;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.atomic.AtomicIntegerFieldUpdater;
 import java.util.function.ToIntFunction;
@@ -71,6 +72,7 @@ final class RemoteConnectionChannel extends AbstractHandleableCloseable<Channel>
     private final int maxInboundMessages;
     private final long maxOutboundMessageSize;
     private final long maxInboundMessageSize;
+    private final boolean dispatch;
     private volatile int channelState = 0;
 
     private static final AtomicIntegerFieldUpdater<RemoteConnectionChannel> channelStateUpdater = AtomicIntegerFieldUpdater.newUpdater(RemoteConnectionChannel.class, "channelState");
@@ -84,7 +86,7 @@ final class RemoteConnectionChannel extends AbstractHandleableCloseable<Channel>
     private static final int INBOUND_MESSAGES_MASK = ((1 << 30) - 1) & ~OUTBOUND_MESSAGES_MASK;
     private static final int ONE_INBOUND_MESSAGE = (1 << 15);
 
-    RemoteConnectionChannel(final RemoteConnectionHandler connectionHandler, final RemoteConnection connection, final int channelId, final int outboundWindow, final int inboundWindow, final int maxOutboundMessages, final int maxInboundMessages, final long maxOutboundMessageSize, final long maxInboundMessageSize) {
+    RemoteConnectionChannel(final RemoteConnectionHandler connectionHandler, final RemoteConnection connection, final int channelId, final int outboundWindow, final int inboundWindow, final int maxOutboundMessages, final int maxInboundMessages, final long maxOutboundMessageSize, final long maxInboundMessageSize, final boolean dispatch) {
         super(connectionHandler.getConnectionContext().getConnectionProviderContext().getExecutor(), true);
         this.maxOutboundMessageSize = maxOutboundMessageSize;
         this.maxInboundMessageSize = maxInboundMessageSize;
@@ -96,6 +98,7 @@ final class RemoteConnectionChannel extends AbstractHandleableCloseable<Channel>
         this.inboundWindow = inboundWindow;
         this.maxOutboundMessages = maxOutboundMessages;
         this.maxInboundMessages = maxInboundMessages;
+        this.dispatch = dispatch;
     }
 
     void openOutboundMessage() throws IOException {
@@ -349,7 +352,13 @@ final class RemoteConnectionChannel extends AbstractHandleableCloseable<Channel>
         synchronized (connection.getLock()) {
             if (inboundMessageQueue.isEmpty()) {
                 if ((channelState & READ_CLOSED) != 0) {
-                    getExecutor().execute(() -> handler.handleEnd(RemoteConnectionChannel.this));
+                    Executor executor;
+                    if (dispatch) {
+                        executor = getExecutor();
+                    } else {
+                        executor = connection.getConnection().getIoThread();
+                    }
+                    executor.execute(() -> handler.handleEnd(RemoteConnectionChannel.this));
                 } else if (nextReceiver != null) {
                     throw new IllegalStateException("Message handler already queued");
                 } else {
@@ -358,7 +367,13 @@ final class RemoteConnectionChannel extends AbstractHandleableCloseable<Channel>
             } else {
                 final InboundMessage message = inboundMessageQueue.remove();
                 try {
-                    getExecutor().execute(() -> handler.handleMessage(RemoteConnectionChannel.this, message.messageInputStream));
+                    Executor executor;
+                    if (dispatch) {
+                        executor = getExecutor();
+                    } else {
+                        executor = connection.getConnection().getIoThread();
+                    }
+                    executor.execute(() -> handler.handleMessage(RemoteConnectionChannel.this, message.messageInputStream));
                 } catch (Throwable t) {
                     connection.handleException(new IOException("Fatal connection error", t));
                     return;
@@ -375,6 +390,7 @@ final class RemoteConnectionChannel extends AbstractHandleableCloseable<Channel>
             .add(RemotingOptions.RECEIVE_WINDOW_SIZE)
             .add(RemotingOptions.MAX_INBOUND_MESSAGE_SIZE)
             .add(RemotingOptions.MAX_OUTBOUND_MESSAGE_SIZE)
+            .add(RemotingOptions.DISPATCH_INCOMING)
             .create();
 
     public boolean supportsOption(final Option<?> option) {
@@ -394,6 +410,8 @@ final class RemoteConnectionChannel extends AbstractHandleableCloseable<Channel>
             return option.cast(maxInboundMessageSize);
         } else if (option == RemotingOptions.MAX_OUTBOUND_MESSAGE_SIZE) {
             return option.cast(maxOutboundMessageSize);
+        } else if (option == RemotingOptions.DISPATCH_INCOMING) {
+            return option.cast(Boolean.valueOf(dispatch));
         } else {
             return null;
         }
@@ -427,7 +445,11 @@ final class RemoteConnectionChannel extends AbstractHandleableCloseable<Channel>
                             final Receiver receiver = nextReceiver;
                             nextReceiver = null;
                             try {
-                                getExecutor().execute(() -> receiver.handleMessage(RemoteConnectionChannel.this, inboundMessage.messageInputStream));
+                                if (dispatch) {
+                                    getExecutor().execute(() -> receiver.handleMessage(RemoteConnectionChannel.this, inboundMessage.messageInputStream));
+                                } else {
+                                    receiver.handleMessage(RemoteConnectionChannel.this, inboundMessage.messageInputStream);
+                                }
                                 ok2 = true;
                             } catch (Throwable t) {
                                 connection.handleException(new IOException("Fatal connection error", t));

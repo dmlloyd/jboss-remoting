@@ -330,6 +330,8 @@ final class RemoteConnectionHandler extends AbstractHandleableCloseable<Connecti
         final long outboundMessageSize = optionMap.get(RemotingOptions.MAX_OUTBOUND_MESSAGE_SIZE, outboundMessageSizeOptionValue);
         final long inboundMessageSize = optionMap.get(RemotingOptions.MAX_INBOUND_MESSAGE_SIZE, inboundMessageSizeOptionValue);
 
+        final boolean dispatch = optionMap.get(RemotingOptions.DISPATCH_INCOMING, Boolean.TRUE).booleanValue();
+
         final IntIndexMap<PendingChannel> pendingChannels = this.pendingChannels;
         try {
             handleOutboundChannelOpen();
@@ -343,7 +345,7 @@ final class RemoteConnectionHandler extends AbstractHandleableCloseable<Connecti
             for (;;) {
                 id = random.nextInt() | 0x80000000;
                 if (! pendingChannels.containsKey(id)) {
-                    PendingChannel pendingChannel = new PendingChannel(id, outboundWindowSize, inboundWindowSize, outboundMessageCount, inboundMessageCount, outboundMessageSize, inboundMessageSize, result);
+                    PendingChannel pendingChannel = new PendingChannel(id, outboundWindowSize, inboundWindowSize, outboundMessageCount, inboundMessageCount, outboundMessageSize, inboundMessageSize, dispatch, result);
                     if (pendingChannels.putIfAbsent(pendingChannel) == null) {
                         if (log.isTraceEnabled()) {
                             log.tracef("Outbound service request for channel %08x is configured as follows:\n" +
